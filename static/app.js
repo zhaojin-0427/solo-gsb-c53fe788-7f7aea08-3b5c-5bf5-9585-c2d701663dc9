@@ -601,10 +601,12 @@ async function loadPublished() {
 // 会被当成“无保留区/零通道”、现状停用会隐藏发布时灯具块——两者都会改写历史
 // 占用。独立渲染让旧记录的 null 与现状启停只以“未知/当前”标注呈现，快照记录
 // 则照常显示完整快照值；预览路径行为完全不变。
-function renderPublishedTracks(occupancy) {
+// container 可指定渲染目标（默认已发布页签的占用区），换场施工单复用它渲染
+// 起点/目标两版快照占用。
+function renderPublishedTracks(occupancy, container = $("#published-tracks")) {
   const pct = (addr) => `calc(${(addr - 1) / 512 * 100}%)`;
   const widthPct = (a, b) => `calc(${(b - a + 1) / 512 * 100}%)`;
-  $("#published-tracks").innerHTML = occupancy
+  container.innerHTML = occupancy
     .map((line) => {
       // 保留区无法还原（null）时不画保留块、不计入已用：显示“未知”，不得当作无保留区
       const resUnknown = line.reservations === null || line.reservations === undefined;
@@ -698,7 +700,8 @@ function renderPublishedMigrations(migrations) {
 
 // ---------- 现场地址核验 ----------
 // 已发布方案选择器：可选择任一已发布版本，核验以该版本发布时的落点为基准，
-// 灯具后来改名、删除或再次发布都不影响核验结果。DMX 信号回放共用同一份列表。
+// 灯具后来改名、删除或再次发布都不影响核验结果。DMX 信号回放与双版本换场
+// 施工单共用同一份列表。
 async function loadVerifyPlans() {
   const plans = await api("/api/plans/published");
   const options = plans
@@ -709,6 +712,21 @@ async function loadVerifyPlans() {
     .join("");
   $("#verify-plan-select").innerHTML = options;
   $("#replay-plan-select").innerHTML = options;
+  // 换场施工单：默认起点为较旧的一份、目标为最新的一份（列表新的在前）
+  const fromSel = $("#changeover-from-select");
+  const toSel = $("#changeover-to-select");
+  const keepFrom = fromSel.value;
+  const keepTo = toSel.value;
+  fromSel.innerHTML = options;
+  toSel.innerHTML = options;
+  if (plans.length >= 2) {
+    fromSel.value = keepFrom && plans.some((p) => String(p.plan_id) === keepFrom)
+      ? keepFrom
+      : String(plans[1].plan_id);
+    toSel.value = keepTo && plans.some((p) => String(p.plan_id) === keepTo)
+      ? keepTo
+      : String(plans[0].plan_id);
+  }
 }
 
 $("#btn-verify").addEventListener("click", async () => {
@@ -1144,6 +1162,132 @@ $("#replay-result").addEventListener("input", (e) => {
   replayState.frameIndex = Number(e.target.value);
   drawReplayFrame();
 });
+
+// ---------- 双版本换场施工单 ----------
+// 施工单为只读：服务端从两份发布快照还原起点/目标并逐项模拟，页面只展示结果。
+const CHANGEOVER_ACTIONS = {
+  remove: { label: "拆除", cls: "co-remove" },
+  relocate: { label: "迁址", cls: "co-relocate" },
+  resize: { label: "通道数调整", cls: "co-resize" },
+  install: { label: "接入", cls: "co-install" },
+  stage: { label: "临时周转", cls: "co-stage" },
+};
+
+function changeoverInterval(iv) {
+  if (!iv) return "—";
+  return `线路 ${iv.line_id}：${iv.start}-${iv.end}（${iv.channels} 通道）`;
+}
+
+$("#btn-changeover").addEventListener("click", async () => {
+  const fromId = $("#changeover-from-select").value;
+  const toId = $("#changeover-to-select").value;
+  const box = $("#changeover-result");
+  if (!fromId || !toId) return toast("请选择起点与目标两份已发布方案", "error");
+  try {
+    const r = await api(`/api/plans/changeover?from_plan_id=${fromId}&to_plan_id=${toId}`);
+    renderChangeover(r);
+  } catch (err) {
+    // 两版保留区/线路启停不同、无快照、未发布等拒绝情形：展示服务端说明的原因
+    box.innerHTML = `<div class="banner err"><strong>未生成施工单：</strong>${esc(err.message)}</div>`;
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+});
+
+function renderChangeover(r) {
+  const box = $("#changeover-result");
+  let html = "";
+
+  if (r.status === "blocked") {
+    // 找不到安全周转位：不输出任何施工步骤，列明阻塞区间
+    const b = r.blocking;
+    html += `<div class="banner err"><strong>⛔ 找不到安全周转位，未生成施工步骤。</strong><br>${esc(r.message)}</div>`;
+    html += `
+      <h3>阻塞详情</h3>
+      <p class="muted">
+        灯具 #${b.waiting.fixture_id} ${esc(b.waiting.name)} 等待落位到
+        ${changeoverInterval(b.waiting.target)}；占位灯具 #${b.fixture.fixture_id}
+        ${esc(b.fixture.name)}（当前在 ${changeoverInterval(b.fixture.current)}）需要
+        <strong>${b.required_channels}</strong> 通道的连续空闲周转位，但各线路均没有足够大的安全空闲段。
+      </p>
+      <table class="data">
+        <thead><tr><th>线路</th><th>最大连续空闲</th><th>空闲段（起-止/通道数）</th><th>阻塞区间（当前占用 / 保留区 / 目标落点）</th></tr></thead>
+        <tbody>${b.lines
+          .map(
+            (l) => `<tr>
+              <td>线路 ${l.line_id}${l.is_active ? "" : ' <span class="muted">（已停用，不可周转）</span>'}</td>
+              <td>${l.largest_free_gap}</td>
+              <td>${l.free_gaps.length ? l.free_gaps.map((g) => `${g.start}-${g.end}（${g.channels}）`).join("、") : "无"}</td>
+              <td>${l.occupied.map((o) => `${esc(o.label)} ${o.start}-${o.end}`).join("；") || "—"}</td>
+            </tr>`
+          )
+          .join("")}</tbody>
+      </table>`;
+    box.innerHTML = html;
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return;
+  }
+
+  const s = r.summary;
+  if (s.steps === 0) {
+    html += `<div class="banner ok">✅ 两版本灯具落点完全一致（${s.unchanged} 台均不变），无需施工。</div>`;
+  } else {
+    html += `<div class="banner ok">
+      ✅ 施工单已生成并逐项模拟通过：共 <strong>${s.steps}</strong> 步 ——
+      拆除 ${s.remove} · 迁址 ${s.relocate} · 通道数调整 ${s.resize} · 接入 ${s.install} · 临时周转 ${s.stage}；
+      其余 ${s.unchanged} 台不变。所有中间态均无重叠、未占保留区，末态与目标版本一致。
+    </div>`;
+  }
+  html += `<p class="muted">
+    起点：发布 #${r.from_plan_id}（配置 v${r.from_config_version}） → 目标：发布 #${r.to_plan_id}（配置 v${r.to_config_version}）。
+    两版保留区与线路启停一致（已校验）；起点与目标均取自各自发布快照，与发布回写后的当前既有地址无关。
+  </p>`;
+
+  if (s.steps > 0) {
+    html += `
+      <h3>施工步骤（按顺序执行，每步标注释放/占用区间）</h3>
+      <table class="data">
+        <thead><tr><th>#</th><th>动作</th><th>灯具</th><th>释放区间</th><th>占用区间</th><th>备注</th></tr></thead>
+        <tbody>${r.steps
+          .map((st) => {
+            const a = CHANGEOVER_ACTIONS[st.action] || { label: st.label, cls: "" };
+            return `<tr>
+              <td>${st.seq}</td>
+              <td><span class="co-badge ${a.cls}">${a.label}</span></td>
+              <td>#${st.fixture_id} ${esc(st.name)}</td>
+              <td>${changeoverInterval(st.released)}</td>
+              <td>${changeoverInterval(st.occupied)}</td>
+              <td class="muted">${esc(st.note || "")}</td>
+            </tr>`;
+          })
+          .join("")}</tbody>
+      </table>
+      <p class="muted">模拟校验：${r.verification.steps_simulated} 步逐项模拟，中间态不重叠、不占保留区，末态等于目标版本。</p>`;
+  }
+
+  if (r.unchanged && r.unchanged.length) {
+    html += `
+      <details class="co-unchanged"><summary>不变灯具 ${r.unchanged.length} 台（无需操作）</summary>
+        <table class="data">
+          <thead><tr><th>灯具ID</th><th>名称</th><th>线路</th><th>起始</th><th>结束</th><th>通道数</th></tr></thead>
+          <tbody>${r.unchanged
+            .map(
+              (u) => `<tr><td>${u.fixture_id}</td><td>${esc(u.name)}</td>
+                <td>${u.line_id}</td><td>${u.start}</td><td>${u.end}</td><td>${u.channels}</td></tr>`
+            )
+            .join("")}</tbody>
+        </table>
+      </details>`;
+  }
+
+  // 起点/目标两版快照占用对照（均取自各自发布快照）
+  html += `
+    <h3>起点版本占用（发布 #${r.from_plan_id}）</h3><div id="changeover-from-tracks"></div>
+    <h3>目标版本占用（发布 #${r.to_plan_id}）</h3><div id="changeover-to-tracks"></div>`;
+  box.innerHTML = html;
+  renderPublishedTracks(r.from_occupancy || [], $("#changeover-from-tracks"));
+  renderPublishedTracks(r.to_occupancy || [], $("#changeover-to-tracks"));
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 
 // ---------- 启动 ----------
 (async function init() {

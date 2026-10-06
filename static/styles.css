@@ -121,6 +121,22 @@ code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 12p
 #replay-result td.written-now { background: #fef9c3; }
 #replay-result tr.zero-row { color: var(--muted); }
 
+/* 双版本换场施工单 */
+#changeover-panel select { min-width: 260px; }
+#changeover-result h3 { font-size: 14px; margin: 18px 0 8px; }
+#changeover-result p { margin: 4px 0 8px; }
+.co-badge {
+  display: inline-block; border-radius: 10px; padding: 1px 10px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.co-remove { background: #fee2e2; color: #991b1b; }
+.co-relocate { background: #fef3c7; color: #92400e; }
+.co-resize { background: #ede9fe; color: #5b21b6; }
+.co-install { background: #dcfce7; color: #166534; }
+.co-stage { background: #e0f2fe; color: #075985; }
+.co-unchanged { margin: 12px 0; }
+.co-unchanged summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
+
 #conflict-panel { background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
 #conflict-panel h2 { color: var(--danger); margin-top: 0; }
 #conflict-list li { margin: 4px 0; }

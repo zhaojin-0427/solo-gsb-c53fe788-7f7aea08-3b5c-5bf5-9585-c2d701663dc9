@@ -1,4 +1,4 @@
-"""编排预览、原子发布、已发布地址表查询与 CSV 下载、现场地址核验、DMX 信号回放。"""
+"""编排预览、原子发布、已发布地址表查询与 CSV 下载、现场地址核验、DMX 信号回放、双版本换场施工单。"""
 from __future__ import annotations
 
 import csv
@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from .. import changeover as changeoverlib
 from .. import planner, replay as replaylib, verify
 from ..database import get_db
 from ..models import Plan
@@ -52,6 +53,62 @@ def list_published(db: Session = Depends(get_db)):
         }
         for p in plans
     ]
+
+
+# 注意：/changeover 与 /published 一样必须声明在 /{plan_id} 之前，否则单段
+# 路径 "changeover" 会被 /{plan_id} 捕获并因无法解析为整数而返回 422
+@router.get("/changeover")
+def changeover(from_plan_id: int, to_plan_id: int, db: Session = Depends(get_db)):
+    """双版本换场施工单（只读）：比较两份已发布方案，生成有序施工步骤。
+
+    起点与目标一律取自两份方案的**发布快照**（灯具闭区间、保留区与线路启停），
+    绝不读取发布回写后的当前灯具既有地址，也不使用任何单份方案的迁移清单冒充
+    起点。两版保留区或线路启停不同、任一方案无快照或未发布时拒绝生成（409），
+    不输出貌似安全的步骤。本端点只读，不修改编排与发布数据。
+    """
+    if from_plan_id == to_plan_id:
+        raise HTTPException(
+            status_code=422,
+            detail="起点与目标是同一份方案，无需换场；请选择两份不同的已发布方案",
+        )
+    plans: dict[int, Plan] = {}
+    payloads: dict[int, dict] = {}
+    for pid in (from_plan_id, to_plan_id):
+        plan = db.get(Plan, pid)
+        if plan is None:
+            raise HTTPException(status_code=404, detail=f"方案 #{pid} 不存在")
+        if plan.status != "published":
+            raise HTTPException(
+                status_code=409,
+                detail=f"方案 #{pid} 尚未发布（当前状态：{plan.status}），换场施工单只接受已发布方案",
+            )
+        payload = planner.get_plan_payload(db, pid)
+        if not payload.get("from_snapshot"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"方案 #{pid} 缺少发布快照（旧记录），无法还原发布时的保留区与线路启停；"
+                    "为避免生成貌似安全的施工步骤，已拒绝生成施工单。"
+                ),
+            )
+        plans[pid] = plan
+        payloads[pid] = payload
+
+    try:
+        result = changeoverlib.build_work_order(payloads[from_plan_id], payloads[to_plan_id])
+    except changeoverlib.IncompatibleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result.update(
+        {
+            "from_plan_id": from_plan_id,
+            "to_plan_id": to_plan_id,
+            "from_config_version": plans[from_plan_id].config_version,
+            "to_config_version": plans[to_plan_id].config_version,
+            "from_published_at": plans[from_plan_id].published_at,
+            "to_published_at": plans[to_plan_id].published_at,
+        }
+    )
+    return result
 
 
 @router.get("/{plan_id}")
