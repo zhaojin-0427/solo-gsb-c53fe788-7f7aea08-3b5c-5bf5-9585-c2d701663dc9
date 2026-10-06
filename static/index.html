@@ -199,6 +199,27 @@
           </div>
           <div id="replay-result"></div>
         </div>
+
+        <!-- 双版本换场施工单 -->
+        <h2>双版本换场施工单</h2>
+        <div id="changeover-panel">
+          <p class="muted">
+            选择<strong>两份已发布方案</strong>（旧版起点 → 新版目标），服务端从各自的
+            <strong>发布快照</strong>还原灯具闭区间、保留区与线路启停，按灯具 ID 输出
+            拆除、迁址、通道数调整与接入的<strong>有序施工步骤</strong>：每步都经逐步模拟，
+            任何中间态灯具区间都不重叠、不压保留区，末态严格等于新版；灯具互相占位时，
+            会利用空闲连续区间<strong>临时周转</strong>（临时位避开新版所有落点），并列出每步释放/占用的区间。
+            两版保留区或线路启停不同、任一方案无快照或未发布时，不生成貌似安全的步骤并说明原因；
+            找不到安全周转位时列明阻塞区间。施工单为只读，不会修改任何编排、发布与配置数据。
+          </p>
+          <div class="toolbar">
+            <select id="changeover-from-select" title="旧版（起点）"></select>
+            <span>➡️</span>
+            <select id="changeover-to-select" title="新版（目标）"></select>
+            <button id="btn-changeover" class="primary">生成换场施工单</button>
+          </div>
+          <div id="changeover-result"></div>
+        </div>
       </div>
     </section>
   </main>

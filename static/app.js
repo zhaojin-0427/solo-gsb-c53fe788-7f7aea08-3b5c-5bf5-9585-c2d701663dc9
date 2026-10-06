@@ -709,6 +709,13 @@ async function loadVerifyPlans() {
     .join("");
   $("#verify-plan-select").innerHTML = options;
   $("#replay-plan-select").innerHTML = options;
+  // 换场施工单的两个版本选择器：默认“起点=上一版、目标=最新版”
+  $("#changeover-from-select").innerHTML = options;
+  $("#changeover-to-select").innerHTML = options;
+  if (plans.length >= 2) {
+    $("#changeover-from-select").value = plans[1].plan_id;
+    $("#changeover-to-select").value = plans[0].plan_id;
+  }
 }
 
 $("#btn-verify").addEventListener("click", async () => {
@@ -1144,6 +1151,160 @@ $("#replay-result").addEventListener("input", (e) => {
   replayState.frameIndex = Number(e.target.value);
   drawReplayFrame();
 });
+
+// ---------- 双版本换场施工单 ----------
+// 只读：起点与目标均取自各自发布快照；服务端逐步模拟后返回有序步骤或拒绝原因。
+$("#btn-changeover").addEventListener("click", async () => {
+  const fromId = $("#changeover-from-select").value;
+  const toId = $("#changeover-to-select").value;
+  if (!fromId || !toId) return toast("请选择两份已发布方案", "error");
+  if (fromId === toId) return toast("请选择两份不同的已发布方案", "error");
+  const box = $("#changeover-result");
+  box.innerHTML = '<p class="muted">正在从两份发布快照还原并逐步模拟……</p>';
+  try {
+    const report = await api(`/api/plans/changeover?from=${fromId}&to=${toId}`);
+    renderChangeover(report);
+  } catch (err) {
+    renderChangeoverRejection(err);
+  }
+});
+
+// 选择起点/目标后即时给出“同一份方案”的前端提示，避免无谓请求
+$("#changeover-from-select").addEventListener("change", warnSameChangeoverPlans);
+$("#changeover-to-select").addEventListener("change", warnSameChangeoverPlans);
+function warnSameChangeoverPlans() {
+  const btn = $("#btn-changeover");
+  const same =
+    $("#changeover-from-select").value &&
+    $("#changeover-from-select").value === $("#changeover-to-select").value;
+  btn.disabled = same;
+  btn.title = same ? "起点与目标必须是两份不同的已发布方案" : "";
+}
+
+const CHANGEOVER_ACTION_LABELS = {
+  remove: "🧹 拆除",
+  relocate: "🚚 迁址",
+  temp_relocate: "⏳ 临时周转",
+  channel_adjust: "🔧 通道数调整",
+  install: "🆕 接入",
+};
+
+function fmtIval(iv) {
+  if (!iv) return "—";
+  return `线路 ${iv.line_id} · ${iv.start}-${iv.end}（${iv.channels}ch）`;
+}
+
+function renderChangeover(r) {
+  const box = $("#changeover-result");
+  if (!r.feasible) {
+    let html = `
+      <div class="banner err">
+        <strong>无法生成安全施工单：</strong>${esc(r.message || "找不到安全周转位。")}
+      </div>
+      <p class="muted">下列灯具的目标位被占用，且启用线路上没有足够的“空闲且不挡住新版落点”的连续区间可作周转：</p>`;
+    html += `<table class="data">
+      <thead><tr><th>需周转灯具</th><th>目标区间</th><th>占用目标位的灯具</th><th>各启用线路最大可用连续区间</th></tr></thead>
+      <tbody>${(r.blocking || [])
+        .map((b) => `<tr>
+          <td>#${b.fixture_id}</td>
+          <td>${fmtIval(b.target)}</td>
+          <td>${b.blocking_fixture_ids.length ? b.blocking_fixture_ids.map((x) => `#${x}`).join("、") : "—"}</td>
+          <td>${(b.free_runs || [])
+            .map((f) => `线路 ${f.line_id}：最大 ${f.largest_neutral_free_channels}ch（需要 ${f.needed_channels}ch）`)
+            .join("<br>")}</td>
+        </tr>`)
+        .join("")}</tbody></table>`;
+    box.innerHTML = html;
+    return;
+  }
+
+  const c = r.counts;
+  const steps = r.steps || [];
+  let html = `
+    <div class="banner ok">
+      换场施工单（发布 #${r.from_plan_id} ➡️ 发布 #${r.to_id}）：共 <strong>${c.total_steps}</strong> 步，
+      其中临时周转 <strong>${c.temporary_steps}</strong> 步。
+      拆除 ${c.remove} 台 · 迁址 ${c.relocate} 台 · 通道数调整 ${c.channel_adjust} 台
+      （缩短 ${c.channel_adjust_shrink} / 加长 ${c.channel_adjust_grow}）· 接入 ${c.install} 台。
+      每一步均经逐步模拟：中间态不重叠、不压保留区，末态等于发布 #${r.to_plan_id}。
+    </div>
+    <table class="data">
+      <thead><tr><th>#</th><th>操作</th><th>灯具</th><th>释放区间</th><th>占用区间</th><th>说明</th></tr></thead>
+      <tbody>${steps
+        .map((s) => {
+          const label = CHANGEOVER_ACTION_LABELS[s.action] || s.action;
+          const rel = s.release.length
+            ? s.release.map((x) => fmtIval(x)).join("<br>")
+            : "—";
+          const chNote =
+            s.action === "channel_adjust"
+              ? `${s.channels_before}ch ➡️ ${s.channels_after}ch${s.note ? "；" + esc(s.note) : ""}`
+              : esc(s.note || "");
+          return `<tr${s.temporary ? ' class="temp-step"' : ""}>
+            <td>${s.seq}${s.temporary ? ' <span class="count">临时</span>' : ""}</td>
+            <td>${label}</td>
+            <td>#${s.fixture_id} ${esc(s.fixture_name)}</td>
+            <td>${rel}</td>
+            <td>${fmtIval(s.occupy)}</td>
+            <td>${chNote}</td>
+          </tr>`;
+        })
+        .join("")}</tbody>
+    </table>`;
+  box.innerHTML = html;
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderChangeoverRejection(err) {
+  const box = $("#changeover-result");
+  let html = "";
+  const detail = err && err.detail;
+  if (detail && typeof detail === "object" && detail.message) {
+    html += `<div class="banner err"><strong>不能生成换场施工单：</strong>${esc(detail.message)}</div>`;
+    const reasonLabels = {
+      missing_snapshot: "方案缺少发布快照",
+      snapshot_inconsistent: "快照数据不一致",
+      lines_mismatch: "线路启停两版不一致",
+      reservations_mismatch: "保留区两版不一致",
+      simulation_failed: "施工模拟自检失败",
+    };
+    for (const reason of detail.reasons || []) {
+      if (reason.type === "line_active_mismatch") {
+        html += `
+          <h3>线路启停差异</h3>
+          <table class="data"><thead><tr><th>线路</th><th>旧版</th><th>新版</th></tr></thead>
+          <tbody>${reason.lines
+            .map(
+              (l) => `<tr><td>线路 ${l.line_id}</td>
+                <td>${l.from_a_active ? "启用" : "停用"}</td>
+                <td class="diff-bad">${l.to_b_active ? "启用" : "停用"}</td></tr>`
+            )
+            .join("")}</tbody></table>`;
+      } else if (reason.type === "reservation_mismatch") {
+        html += reason.lines
+          .map(
+            (l) => `
+          <h3>线路 ${l.line_id} 的保留区差异</h3>
+          <table class="data">
+            <thead><tr><th>旧版（起点）保留区</th><th>新版（目标）保留区</th></tr></thead>
+            <tbody><tr>
+              <td>${l.from_a.length ? l.from_a.map((r) => `${r.start}-${r.end}`).join("、") : "（无）"}</td>
+              <td class="diff-bad">${l.to_b.length ? l.to_b.map((r) => `${r.start}-${r.end}`).join("、") : "（无）"}</td>
+            </tr></tbody></table>`
+          )
+          .join("");
+      } else if (reason.reason === "missing_snapshot") {
+        html += `<p class="muted">方案 #${reason.plan_id} 缺少发布快照（可能是旧库遗留记录），保留区与发布时线路启停无法还原。</p>`;
+      } else {
+        html += `<p class="muted">${esc(reasonLabels[detail.code] || detail.code)}</p>`;
+      }
+    }
+  } else {
+    html = `<div class="banner err"><strong>请求失败：</strong>${esc((err && err.message) || "未知错误")}</div>`;
+  }
+  box.innerHTML = html;
+  toast("无法生成施工单", "error");
+}
 
 // ---------- 启动 ----------
 (async function init() {

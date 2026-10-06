@@ -176,8 +176,12 @@ code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .toast.error { background: #991b1b; }
 .toast.success { background: #166534; }
 
-.switch { position: relative; width: 38px; height: 20px; }
-.switch input { opacity: 0; width: 0; height: 0; }
+/* 双版本换场施工单 */
+#changeover-panel select { min-width: 240px; }
+#changeover-result h3 { font-size: 14px; margin: 18px 0 8px; }
+#changeover-result tr.temp-step td { background: #fff7ed; }
+
+.switch { position: relative; width: 38px; height: 20px; }.switch input { opacity: 0; width: 0; height: 0; }
 .slider {
   position: absolute; inset: 0; background: #cbd5e1; border-radius: 10px; cursor: pointer; transition: .15s;
 }
